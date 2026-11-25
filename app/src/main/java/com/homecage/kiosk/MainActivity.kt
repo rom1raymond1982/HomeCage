@@ -704,7 +704,8 @@ class MainActivity : Activity() {
 
     private fun statusDot(sizeDp: Int): View =
         View(this).apply {
-            background = roundedBackground(HomeCageColors.AccentGreen, HomeCageColors.AccentGreen, radiusDp = sizeDp / 2)            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = roundedBackground(HomeCageColors.AccentGreen, HomeCageColors.AccentGreen, radiusDp = sizeDp / 2)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
 
     private fun allowedAppsLabel(count: Int): String =
