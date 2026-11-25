@@ -90,7 +90,7 @@
     <string name="status_not_allowed">not allowed</string>
     <string name="status_calls_allowed">allowed</string>
     <string name="status_calls_not_allowed">not allowed</string>
-    <string name="fallback_status">Device Admin: %1$s\nAccessibility protection: %2$s\nCalls: %3$s\nLocation: %4$s</string>
+    <string name="fallback_status">Device Admin: %1$s\nAccessibility protection: %2$s</string>
     <string name="button_enable_device_admin">Enable Device Admin</string>
     <string name="button_open_accessibility">Open Accessibility</string>
     <string name="button_open_accessibility_service">Open HomeCage Accessibility</string>
