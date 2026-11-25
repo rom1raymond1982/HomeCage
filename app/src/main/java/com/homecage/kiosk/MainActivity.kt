@@ -1,12 +1,10 @@
 package com.homecage.kiosk
 
-import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -35,14 +33,9 @@ import com.homecage.kiosk.admin.KioskPolicyManager
 import com.homecage.kiosk.data.AppRepository
 import com.homecage.kiosk.data.KioskPreferences
 import com.homecage.kiosk.data.LaunchableApp
-import com.homecage.kiosk.data.QuickCallContact
 import com.homecage.kiosk.locale.AppLocaleManager
 import com.homecage.kiosk.protection.KioskAccessibilityService
-import com.homecage.kiosk.sync.ConfigSyncScheduler
-import com.homecage.kiosk.sync.ConfigSyncer
 import com.homecage.kiosk.ui.HomeCageColors
-import java.text.DateFormat
-import java.util.Date
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
@@ -51,7 +44,6 @@ class MainActivity : Activity() {
     private lateinit var policyManager: KioskPolicyManager
     private var launchableApps: List<LaunchableApp> = emptyList()
     private var currentScreen = Screen.LAUNCHER
-    private var syncInFlight = false
     private var pinWorkInFlight = false
 
     override fun attachBaseContext(newBase: Context) {
@@ -65,7 +57,6 @@ class MainActivity : Activity() {
         policyManager = KioskPolicyManager(this)
         refreshApps()
         applyCurrentPolicies()
-        ConfigSyncScheduler.schedule(this)
         showLauncherScreen()
     }
 
@@ -76,7 +67,6 @@ class MainActivity : Activity() {
             refreshApps()
             applyCurrentPolicies()
             policyManager.startLockTaskIfReady(this)
-            maybeSyncRemoteConfig(force = currentScreen == Screen.LAUNCHER)
         }
     }
 
@@ -92,40 +82,13 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        when (requestCode) {
-            REQUEST_CALL_PHONE -> {
-                val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
-                if (granted) {
-                    Toast.makeText(this, R.string.toast_call_permission_enabled, Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, R.string.toast_call_permission_missing, Toast.LENGTH_LONG).show()
-                }
-            }
-            REQUEST_LOCATION -> {
-                val granted = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
-                if (granted) {
-                    Toast.makeText(this, R.string.toast_location_permission_enabled, Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, R.string.toast_location_permission_missing, Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-
-    private fun showLauncherScreen(syncOnOpen: Boolean = true) {
+    private fun showLauncherScreen() {
         currentScreen = Screen.LAUNCHER
         preferences.clearAdminSession()
         refreshApps()
 
         val allowedPackages = preferences.getAllowedPackages()
         val allowedApps = launchableApps.filter { it.packageName in allowedPackages }
-        val quickCallContacts = preferences.getQuickCallContacts()
         val lockdownEnabled = preferences.isLockdownEnabled()
         val root = homeRoot()
 
@@ -142,27 +105,16 @@ class MainActivity : Activity() {
         scrollView.addView(content)
         root.addView(scrollView, weightParams())
 
-        content.addView(statusStrip(allowedApps.size, quickCallContacts.size))
+        content.addView(statusStrip(allowedApps.size))
 
         if (lockdownEnabled) {
             content.addView(lockdownCard())
         } else {
-            content.addView(homeSectionTitle(getString(R.string.home_section_quick_call)))
-            if (quickCallContacts.isEmpty()) {
-                content.addView(emptyStateCard(getString(R.string.home_no_quick_contacts)))
-            } else {
-                quickCallContacts.forEach { contact ->
-                    content.addView(quickCallCard(contact))
-                }
-            }
-
             content.addView(homeSectionTitle(getString(R.string.home_section_allowed_apps)))
             if (allowedApps.isEmpty()) {
                 content.addView(emptyStateCard(getString(R.string.home_no_allowed_apps)))
             } else {
-                allowedApps.forEach { app ->
-                    content.addView(allowedAppCard(app))
-                }
+                allowedApps.forEach { app -> content.addView(allowedAppCard(app)) }
             }
         }
 
@@ -170,7 +122,6 @@ class MainActivity : Activity() {
         enterImmersiveMode()
         applyCurrentPolicies()
         policyManager.startLockTaskIfReady(this)
-        maybeSyncRemoteConfig(force = syncOnOpen)
     }
 
     private fun showAdminPinDialog() {
@@ -248,13 +199,10 @@ class MainActivity : Activity() {
         }
         scrollView.addView(content)
         root.addView(scrollView, weightParams())
-
         content.addView(policyStatusSection())
         content.addView(languageSection())
         content.addView(fallbackProtectionSection())
         content.addView(pinSection())
-        content.addView(serverSection())
-        content.addView(quickCallsSection())
         content.addView(sectionTitle(getString(R.string.section_allowed_apps)))
 
         if (launchableApps.isEmpty()) {
@@ -327,31 +275,6 @@ class MainActivity : Activity() {
             startActivity(intent)
         }.isSuccess
 
-    private fun maybeSyncRemoteConfig(force: Boolean = false) {
-        if (syncInFlight) return
-        if (!ConfigSyncer(this).shouldSyncNow(force = force)) return
-        syncRemoteConfig(showToast = false, refreshAfter = currentScreen == Screen.LAUNCHER)
-    }
-
-    private fun syncRemoteConfig(showToast: Boolean, refreshAfter: Boolean) {
-        if (syncInFlight) return
-        syncInFlight = true
-
-        Thread {
-            val result = ConfigSyncer(applicationContext).sync()
-            runOnUiThread {
-                syncInFlight = false
-                applyCurrentPolicies()
-                if (showToast) {
-                    Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
-                }
-                if (refreshAfter) {
-                    if (currentScreen == Screen.ADMIN) showAdminScreen() else showLauncherScreen(syncOnOpen = false)
-                }
-            }
-        }.start()
-    }
-
     private fun launchApp(app: LaunchableApp) {
         if (preferences.isLockdownEnabled()) {
             Toast.makeText(this, R.string.toast_lockdown_active, Toast.LENGTH_LONG).show()
@@ -371,53 +294,6 @@ class MainActivity : Activity() {
             Toast.makeText(this, R.string.toast_launch_blocked, Toast.LENGTH_SHORT).show()
         }
     }
-
-    private fun confirmQuickCall(contact: QuickCallContact) {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.dialog_quick_call_title)
-            .setMessage(getString(R.string.dialog_quick_call_message, contact.name))
-            .setNegativeButton(R.string.action_no, null)
-            .setPositiveButton(R.string.action_yes) { _, _ ->
-                startQuickCall(contact)
-            }
-            .show()
-    }
-
-    private fun startQuickCall(contact: QuickCallContact) {
-        if (preferences.isLockdownEnabled()) {
-            Toast.makeText(this, R.string.toast_lockdown_active, Toast.LENGTH_LONG).show()
-            return
-        }
-
-        if (!hasCallPermission()) {
-            Toast.makeText(
-                this,
-                getString(R.string.toast_quick_calls_need_permission),
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        placeQuickCall(contact)
-    }
-
-    private fun placeQuickCall(contact: QuickCallContact) {
-        val intent = Intent(Intent.ACTION_CALL).apply {
-            data = Uri.parse("tel:${Uri.encode(contact.phone)}")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching {
-            startActivity(intent)
-        }.onFailure {
-            Toast.makeText(this, R.string.toast_call_failed, Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun hasCallPermission(): Boolean =
-        checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
-
-    private fun hasLocationPermission(): Boolean =
-        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun applyCurrentPolicies() {
         policyManager.applyDeviceOwnerPolicies(
@@ -450,20 +326,9 @@ class MainActivity : Activity() {
     private fun fallbackProtectionSection(): View {
         val deviceAdminStatus = if (policyManager.isDeviceAdminActive()) getString(R.string.status_enabled) else getString(R.string.status_disabled)
         val accessibilityStatus = if (isAccessibilityProtectionEnabled()) getString(R.string.status_enabled) else getString(R.string.status_disabled)
-        val callStatus = if (hasCallPermission()) getString(R.string.status_calls_allowed) else getString(R.string.status_calls_not_allowed)
-        val locationStatus = if (hasLocationPermission()) getString(R.string.status_allowed) else getString(R.string.status_not_allowed)
-
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(infoText(
-                getString(
-                    R.string.fallback_status,
-                    deviceAdminStatus,
-                    accessibilityStatus,
-                    callStatus,
-                    locationStatus
-                )
-            ))
+            addView(infoText(getString(R.string.fallback_status, deviceAdminStatus, accessibilityStatus)))
             addView(adminActionButton(getString(R.string.button_enable_device_admin)) {
                 preferences.markAdminSessionUnlocked()
                 runCatching { startActivity(policyManager.deviceAdminActivationIntent()) }
@@ -477,28 +342,13 @@ class MainActivity : Activity() {
                 preferences.markAdminSessionUnlocked()
                 openOwnAppSettings(showErrorToast = true)
             }, matchWrapParams(top = 8))
-            addView(adminActionButton(getString(R.string.button_allow_calls)) {
-                preferences.markAdminSessionUnlocked()
-                requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), REQUEST_CALL_PHONE)
-            }, matchWrapParams(top = 8))
-            addView(adminActionButton(getString(R.string.button_allow_location)) {
-                preferences.markAdminSessionUnlocked()
-                requestPermissions(
-                    arrayOf(
-                        Manifest.permission.ACCESS_COARSE_LOCATION,
-                        Manifest.permission.ACCESS_FINE_LOCATION
-                    ),
-                    REQUEST_LOCATION
-                )
-            }, matchWrapParams(top = 8))
         }
         return section(getString(R.string.section_fallback_protection), container)
     }
 
     private fun isAccessibilityProtectionEnabled(): Boolean {
         val enabledServices = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            contentResolver,            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
         val expected = ComponentName(this, KioskAccessibilityService::class.java)
         return enabledServices.split(':').any { rawComponent ->
@@ -614,77 +464,6 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun serverSection(): View {
-        val deviceName = textInput(getString(R.string.device_name_hint)).apply {
-            setText(preferences.getDeviceName())
-        }
-        val serverUrl = textInput(getString(R.string.server_url_hint)).apply {
-            setText(preferences.getServerUrl())
-        }
-        val serverToken = textInput(getString(R.string.server_token_hint)).apply {
-            setText(preferences.getServerToken())
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        }
-        val status = infoText(
-            getString(
-                R.string.sync_status_format,
-                formatTime(preferences.getLastSyncSuccessAt()),
-                preferences.getLastSyncMessage()
-            )
-        )
-        val saveButton = adminActionButton(getString(R.string.button_save_server)) {
-            preferences.setDeviceName(deviceName.text.toString())
-            preferences.setServerUrl(serverUrl.text.toString())
-            preferences.setServerToken(serverToken.text.toString())
-            ConfigSyncScheduler.schedule(this)
-            Toast.makeText(this, R.string.toast_server_saved, Toast.LENGTH_SHORT).show()
-        }
-        val syncButton = adminActionButton(getString(R.string.button_sync_now)) {
-            preferences.setDeviceName(deviceName.text.toString())
-            preferences.setServerUrl(serverUrl.text.toString())
-            preferences.setServerToken(serverToken.text.toString())
-            ConfigSyncScheduler.schedule(this)
-            syncRemoteConfig(showToast = true, refreshAfter = true)
-        }
-
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(saveButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(syncButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(8)
-            })
-        }
-
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(infoText(getString(R.string.remote_server_info)))
-            addView(deviceName, matchWrapParams(top = 8))
-            addView(serverUrl, matchWrapParams(top = 8))
-            addView(serverToken, matchWrapParams(top = 8))
-            addView(status, matchWrapParams(top = 10))
-            addView(buttons, matchWrapParams(top = 12))
-        }
-        return section(getString(R.string.section_remote_management), container)
-    }
-
-    private fun quickCallsSection(): View {
-        val editor = multiLineInput(getString(R.string.quick_call_editor_hint)).apply {
-            setText(formatQuickCallContacts(preferences.getQuickCallContacts()))
-        }
-        val saveButton = adminActionButton(getString(R.string.button_save_quick_calls)) {
-            val contacts = parseQuickCallContacts(editor.text.toString())
-            preferences.setQuickCallContacts(contacts)
-            Toast.makeText(this, R.string.toast_quick_calls_saved, Toast.LENGTH_SHORT).show()
-        }
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(infoText(getString(R.string.quick_calls_format_help)))
-            addView(editor, matchWrapParams(top = 8))
-            addView(saveButton, matchWrapParams(top = 10))
-        }
-        return section(getString(R.string.section_quick_calls), container)
-    }
-
     private fun languageSection(): View {
         val languages = AppLocaleManager.supportedLanguages
         var selectedLanguageTag = preferences.getAppLanguageTag()
@@ -731,24 +510,6 @@ class MainActivity : Activity() {
         }
         return section(getString(R.string.section_language), container)
     }
-
-    private fun formatQuickCallContacts(contacts: List<QuickCallContact>): String =
-        contacts.joinToString(separator = "\n") { "${it.name} | ${it.phone}" }
-
-    private fun parseQuickCallContacts(raw: String): List<QuickCallContact> =
-        raw.lines().mapNotNull { line ->
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) return@mapNotNull null
-            val separatorIndex = listOf(
-                trimmed.indexOf('|'),
-                trimmed.indexOf(';'),
-                trimmed.indexOf(',')
-            ).filter { it >= 0 }.minOrNull() ?: return@mapNotNull null
-
-            val name = trimmed.substring(0, separatorIndex).trim()
-            val phone = trimmed.substring(separatorIndex + 1).trim()
-            if (name.isEmpty() || phone.isEmpty()) null else QuickCallContact(name, phone)
-        }
 
     private fun kioskHeader(onAdminClick: () -> Unit): View {
         val layout = LinearLayout(this).apply {
@@ -806,17 +567,15 @@ class MainActivity : Activity() {
             })
         }
 
-    private fun statusStrip(allowedAppsCount: Int, quickContactCount: Int): View {
-        val status = "${allowedAppsLabel(allowedAppsCount)} $STATUS_SEPARATOR ${quickContactsLabel(quickContactCount)}"
+    private fun statusStrip(allowedAppsCount: Int): View {
+        val status = allowedAppsLabel(allowedAppsCount)
         return homeCardContainer(minHeightDp = 56, radiusDp = 22).apply {
             contentDescription = status
             addView(LinearLayout(this@MainActivity).apply {
                 gravity = Gravity.CENTER
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 addView(statusDot(sizeDp = 10), LinearLayout.LayoutParams(dp(10), dp(10)))
-            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply {
-                marginEnd = dp(8)
-            })
+            }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(8) })
             addView(TextView(this@MainActivity).apply {
                 text = status
                 textSize = 14f
@@ -836,58 +595,6 @@ class MainActivity : Activity() {
             maxLines = 1
             setPadding(dp(2), dp(18), dp(2), dp(8))
         }
-
-    private fun quickCallCard(contact: QuickCallContact): View {
-        val row = homeCardContainer(minHeightDp = 88, radiusDp = 24).apply {
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(R.string.home_quick_call_content_description, contact.name)
-            setOnClickListener { confirmQuickCall(contact) }
-        }
-        val avatar = TextView(this).apply {
-            text = contact.name.trim().take(1).uppercase()
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(HomeCageColors.Background)
-            typeface = Typeface.DEFAULT_BOLD
-            background = roundedBackground(HomeCageColors.AccentGreen, HomeCageColors.AccentGreen, radiusDp = 18)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        val textColumn = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val name = TextView(this).apply {
-            text = contact.name
-            textSize = 19f
-            setTextColor(HomeCageColors.TextPrimary)
-            typeface = Typeface.DEFAULT_BOLD
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        val phone = TextView(this).apply {
-            text = contact.phone
-            textSize = 13f
-            setTextColor(HomeCageColors.TextSecondary)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        val label = TextView(this).apply {
-            text = getString(R.string.home_emergency_contact)
-            textSize = 12f
-            setTextColor(HomeCageColors.TextSecondary)
-            maxLines = 1
-        }
-        textColumn.addView(name)
-        textColumn.addView(phone)
-        textColumn.addView(label)
-
-        row.addView(avatar, LinearLayout.LayoutParams(dp(56), dp(56)).apply {
-            marginEnd = dp(14)
-        })
-        row.addView(textColumn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(chevronView())
-        return row
-    }
 
     private fun allowedAppCard(app: LaunchableApp): View {
         val row = homeCardContainer(minHeightDp = 82, radiusDp = 22).apply {
@@ -997,19 +704,12 @@ class MainActivity : Activity() {
 
     private fun statusDot(sizeDp: Int): View =
         View(this).apply {
-            background = roundedBackground(HomeCageColors.AccentGreen, HomeCageColors.AccentGreen, radiusDp = sizeDp / 2)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = roundedBackground(HomeCageColors.AccentGreen, HomeCageColors.AccentGreen, radiusDp = sizeDp / 2)            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
 
     private fun allowedAppsLabel(count: Int): String =
         getString(
             if (count == 1) R.string.home_apps_allowed_one else R.string.home_apps_allowed_many,
-            count
-        )
-
-    private fun quickContactsLabel(count: Int): String =
-        getString(
-            if (count == 1) R.string.home_quick_contacts_one else R.string.home_quick_contacts_many,
             count
         )
 
@@ -1142,15 +842,6 @@ class MainActivity : Activity() {
             maxLines = 1
         }
 
-    private fun multiLineInput(hintText: String): EditText =
-        EditText(this).apply {
-            hint = hintText
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 3
-            maxLines = 8
-            gravity = Gravity.TOP
-        }
-
     private fun appIcon(app: LaunchableApp): ImageView =
         ImageView(this).apply {
             setImageDrawable(app.icon)
@@ -1246,13 +937,6 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).roundToInt()
 
-    private fun formatTime(timeMillis: Long): String =
-        if (timeMillis <= 0L) {
-            getString(R.string.time_none)
-        } else {
-            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timeMillis))
-        }
-
     private data class PinChangeResult(
         val success: Boolean = false,
         val currentPinIsWrong: Boolean = false,
@@ -1266,8 +950,6 @@ class MainActivity : Activity() {
 
     private companion object {
         const val ACTION_ACCESSIBILITY_DETAILS_SETTINGS = "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
-        const val REQUEST_CALL_PHONE = 4101
-        const val REQUEST_LOCATION = 4102
         const val STATUS_SEPARATOR = "\u00b7"
         val COLOR_BACKGROUND: Int = Color.rgb(248, 250, 252)
         val COLOR_SURFACE: Int = Color.WHITE
